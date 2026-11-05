@@ -282,13 +282,12 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
     };
     u8* pointer = impl->device_memory.template GetPointer<u8>(cpu_addr);
     u8* pointer_timestamp = impl->device_memory.template GetPointer<u8>(cpu_addr + 8);
-    // Switch 2 titles read fence-flagged counter reports back: written when the fence is signaled,
-    // before the GPU produced them, Ocarina's foliage flashed white. They are written once the
-    // fence is reached instead. Payload releases carry their value already: delaying them too made
-    // Ocarina's tree leaves flicker under CPU load. Until written only conditional rendering sees
-    // them (delayed_reports); tracking them as pending made CPU reads wait for the GPU.
-    const bool free_on_run = is_fence && counter_type != QueryType::Payload &&
-                             Tegra::g_nx2_ampere.load(std::memory_order_relaxed);
+    // Switch 2 titles read fence-flagged reports back from the CPU as GPU progress. Written when
+    // the fence was signaled, before the GPU produced them, Ocarina's foliage flashed white; on a
+    // fence that did not wait for the host GPU, its tree leaves flickered under CPU load. They are
+    // written once the host GPU completed the work before them. Until then only conditional
+    // rendering sees them (delayed_reports); tracking them as pending made CPU reads wait.
+    const bool free_on_run = is_fence && Tegra::g_nx2_ampere.load(std::memory_order_relaxed);
     bool is_synced = (free_on_run || (Settings::IsGPUFenceBehaviorDefault()
                                           ? !Settings::IsGPULevelHigh()
                                           : !Settings::IsGPUFenceBehaviorBalanced() &&
@@ -360,7 +359,9 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
             std::scoped_lock lock(cache_mutex);
             delayed_reports.insert_or_assign(cpu_addr, query_location);
         }
-        // Queued operations run when the next fence is released; this empty fence is it.
+        // The fence carrying it must wait for the host GPU: a placeholder one runs the write as
+        // soon as the fencing thread reaches it, possibly before the GPU finished.
+        needs_real_fence.store(true, std::memory_order_relaxed);
         impl->rasterizer.SyncOperation(std::move(operation));
         impl->rasterizer.SignalFence([] {});
     } else if (is_fence) {
@@ -549,6 +550,7 @@ template <typename Traits>
 void QueryCacheBase<Traits>::CommitAsyncFlushes() {
     // Make sure to have the results synced in Host.
     NotifyWFI();
+    needs_real_fence.store(false, std::memory_order_relaxed);
 
     u64 mask{};
     {
@@ -583,7 +585,7 @@ void QueryCacheBase<Traits>::CommitAsyncFlushes() {
 
 template <typename Traits>
 bool QueryCacheBase<Traits>::HasUncommittedFlushes() const {
-    bool result = false;
+    bool result = needs_real_fence.load(std::memory_order_relaxed);
     impl->ForEachStreamer([&result](StreamerInterface* streamer) {
         result |= streamer->HasUnsyncedQueries();
         return result;
@@ -593,7 +595,7 @@ bool QueryCacheBase<Traits>::HasUncommittedFlushes() const {
 
 template <typename Traits>
 bool QueryCacheBase<Traits>::HasPendingFenceWork() const {
-    bool result = false;
+    bool result = needs_real_fence.load(std::memory_order_relaxed);
     impl->ForEachStreamer([&result](StreamerInterface* streamer) {
         result |= streamer->HasUnsyncedQueries() || streamer->HasPendingSync();
         return result;
