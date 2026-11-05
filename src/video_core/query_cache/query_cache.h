@@ -282,10 +282,27 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
     };
     u8* pointer = impl->device_memory.template GetPointer<u8>(cpu_addr);
     u8* pointer_timestamp = impl->device_memory.template GetPointer<u8>(cpu_addr + 8);
-    bool is_synced = (Settings::IsGPUFenceBehaviorDefault() ? !Settings::IsGPULevelHigh() : !Settings::IsGPUFenceBehaviorBalanced() && !Settings::IsGPUFenceBehaviorAccurate()) && is_fence;
-    std::function<void()> operation([this, is_synced, streamer, query_base = query, query_location,
-                                     pointer, pointer_timestamp, cpu_addr, addr,
-                                     asid = gpu_memory->GetID(), counter_type] {
+    // Switch 2 titles read fence-flagged reports back: written when the fence is signaled, before
+    // the GPU produced them, Ocarina's foliage flashed white. They are written once the fence is
+    // reached instead, and freed then; tracking them as pending (as Balanced fences do) made CPU
+    // reads wait for the GPU and its conditional rendering cull the trees' leaves.
+    const bool free_on_run = is_fence && Tegra::g_nx2_ampere.load(std::memory_order_relaxed);
+    bool is_synced = (free_on_run || (Settings::IsGPUFenceBehaviorDefault()
+                                          ? !Settings::IsGPULevelHigh()
+                                          : !Settings::IsGPUFenceBehaviorBalanced() &&
+                                                !Settings::IsGPUFenceBehaviorAccurate())) &&
+                     is_fence;
+    std::function<void()> operation([this, is_synced, free_on_run, new_query_id, streamer,
+                                     query_base = query, query_location, pointer, pointer_timestamp,
+                                     cpu_addr, addr, asid = gpu_memory->GetID(), counter_type] {
+        const auto retire = [&] {
+            if (free_on_run) {
+                std::scoped_lock lock(cache_mutex);
+                streamer->Free(new_query_id);
+            } else if (!is_synced) [[likely]] {
+                impl->pending_unregister.push_back(query_location);
+            }
+        };
         if (True(query_base->flags & QueryFlagBits::IsInvalidated)) {
             if (const u64 trace = QueryTrace::Sample(QueryTrace::Event::Discard)) {
                 LOG_INFO(HW_GPU,
@@ -294,9 +311,7 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
                          trace, asid, addr, cpu_addr, static_cast<u32>(counter_type),
                          static_cast<u32>(query_base->flags));
             }
-            if (!is_synced) [[likely]] {
-                impl->pending_unregister.push_back(query_location);
-            }
+            retire();
             return;
         }
         if (False(query_base->flags & QueryFlagBits::IsFinalValueSynced)) [[unlikely]] {
@@ -309,9 +324,7 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
             }
             LOG_ERROR(HW_GPU,
                       "Query report value not synchronized. Consider increasing GPU accuracy.");
-            if (!is_synced) [[likely]] {
-                impl->pending_unregister.push_back(query_location);
-            }
+            retire();
             return;
         }
         query_base->value += streamer->GetAmendValue();
@@ -334,11 +347,13 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
                      wide ? query_base->value : static_cast<u32>(query_base->value),
                      static_cast<u32>(query_base->flags));
         }
-        if (!is_synced) [[likely]] {
-            impl->pending_unregister.push_back(query_location);
-        }
+        retire();
     });
-    if (is_fence) {
+    if (free_on_run) {
+        // Queued operations run when the next fence is released; this empty fence is it.
+        impl->rasterizer.SyncOperation(std::move(operation));
+        impl->rasterizer.SignalFence([] {});
+    } else if (is_fence) {
         impl->rasterizer.SignalFence(std::move(operation));
     } else {
         if (!Settings::IsGPULevelHigh() && counter_type == QueryType::Payload) {
@@ -365,7 +380,9 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
         impl->rasterizer.SyncOperation(std::move(operation));
     }
     if (is_synced) {
-        streamer->Free(new_query_id);
+        if (!free_on_run) {
+            streamer->Free(new_query_id);
+        }
         return;
     }
     auto [cont_addr, base] = gen_caching_indexing(cpu_addr);
