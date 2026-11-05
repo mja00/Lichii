@@ -8,6 +8,7 @@
 #include <cstring>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <thread>
 #include <type_traits>
 
@@ -176,12 +177,29 @@ public:
     /// of it was still queued.
     bool WaitForSync();
 
-    static constexpr size_t SemSlot(u64 addr) noexcept {
-        return static_cast<size_t>(((addr >> 2) ^ (addr >> 10) ^ (addr >> 18)) & 63U);
+    /// Semaphore and report writes are tracked per 16-byte granule, tagged: an untagged 64-slot
+    /// hash made unrelated macro reads wait for the back (~250 ms a second in Ocarina).
+    static constexpr size_t SemSlot(u64 granule) noexcept {
+        return static_cast<size_t>((granule ^ (granule >> 10) ^ (granule >> 20)) & (SemSlots - 1));
     }
-    void NoteSemaphoreWrite(u64 addr) noexcept {
-        sem_write_positions[SemSlot(addr)] = write_position;
+    /// `value` is the word a plain release writes at `addr`, when the front knows it.
+    void NoteSemaphoreWrite(u64 addr, std::optional<u32> value = std::nullopt) noexcept {
+        const u64 granule = addr >> 4;
+        SemWrite& slot = sem_writes[SemSlot(granule)];
+        // Evicting a write the back has not run yet: later lookups can't see it, so wait for it.
+        if (slot.granule != granule && slot.position > consumed_cache) {
+            sem_evicted_position = std::max(sem_evicted_position, slot.position);
+        }
+        slot = {granule, write_position, addr, value.value_or(0), value.has_value()};
         last_release_position = write_position;
+    }
+    /// The word the latest queued release to `addr` writes, if the front knows it.
+    [[nodiscard]] std::optional<u32> QueuedReleaseValue(u64 addr) const noexcept {
+        const SemWrite& slot = sem_writes[SemSlot(addr >> 4)];
+        if (slot.granule == addr >> 4 && slot.addr == addr && slot.value_known) {
+            return slot.value;
+        }
+        return std::nullopt;
     }
     void NoteAnyRelease() noexcept {
         last_release_position = write_position;
@@ -189,9 +207,18 @@ public:
     [[nodiscard]] u64 LastReleasePosition() const noexcept {
         return last_release_position;
     }
-    bool WaitForSemaphore(u64 addr, DrainSite site = DrainSite::Acquire) {
-        return WaitFor(sem_write_positions[SemSlot(addr)], site);
+    /// Waits for the queued semaphore and report writes to [addr, addr + size).
+    bool WaitForSemaphore(u64 addr, DrainSite site = DrainSite::Acquire, u64 size = 4) {
+        u64 target = sem_evicted_position;
+        for (u64 granule = addr >> 4; granule <= (addr + size - 1) >> 4; ++granule) {
+            const SemWrite& slot = sem_writes[SemSlot(granule)];
+            if (slot.granule == granule) {
+                target = std::max(target, slot.position);
+            }
+        }
+        return WaitFor(std::min(target, write_position), site);
     }
+
 private:
     enum class Kind : u64 {
         Wrap,   ///< The rest of the ring is unused: continue at its start
@@ -252,7 +279,16 @@ private:
     u64 last_writer_position{};
     u64 last_sync_position{};
     u64 last_release_position{};
-    std::array<u64, 64> sem_write_positions{};
+    static constexpr size_t SemSlots = 1024;
+    struct SemWrite {
+        u64 granule{~u64{0}};
+        u64 position{};
+        u64 addr{};
+        u32 value{};
+        bool value_known{};
+    };
+    std::array<SemWrite, SemSlots> sem_writes{};
+    u64 sem_evicted_position{};
     u64 published_local{};
     u64 consumed_cache{};
     /// Words between publishes: small right after a drain, while the back has nothing to do.

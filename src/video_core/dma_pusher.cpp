@@ -493,6 +493,9 @@ void DmaPusher::CallMethod(u32 argument) {
                 split.NoteWriter();
                 split.NoteAnyRelease();
             }
+            if (engine_type == Engines::EngineTypes::KeplerCompute && split.Active()) {
+                FrontNoteComputeReport(dma_state.method, argument);
+            }
         };
         if (split.Active()) {
             const GPUVAddr segment = dma_state.dma_get + dma_state.dma_word_offset;
@@ -564,6 +567,12 @@ void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {
                 split.NoteWriter();
                 split.NoteAnyRelease();
             }
+            if (engine_type == Engines::EngineTypes::KeplerCompute && split.Active()) {
+                for (u32 i = 0; i < num_methods; ++i) {
+                    FrontNoteComputeReport(dma_state.method + (dma_state.non_incrementing ? 0 : i),
+                                           base_start[i]);
+                }
+            }
         };
         if (split.Active()) {
             const GPUVAddr segment = dma_state.dma_get + dma_state.dma_word_offset;
@@ -594,6 +603,26 @@ void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {
         subchannel->current_dma_segment = dma_state.dma_get + dma_state.dma_word_offset;
         subchannel->CallMultiMethod(system, dma_state.method, base_start, num_methods, dma_state.method_count);
     }
+}
+
+void DmaPusher::FrontNoteComputeReport(u32 method, u32 argument) {
+    // SET_REPORT_SEMAPHORE_A-D: KeplerCompute::ProcessNativeReportSemaphore runs D on the back.
+    if (method >= 0x6c0 && method < 0x6c3) {
+        front_compute_report[method - 0x6c0] = argument;
+        return;
+    }
+    if (method != 0x6c3) {
+        return;
+    }
+    const u32 operation = argument & 3;
+    if (operation != 0 && operation != 2) {
+        return;
+    }
+    const GPUVAddr address =
+        (GPUVAddr{front_compute_report[0] & 0x1ffffff} << 32) | front_compute_report[1];
+    const bool reduction = ((argument >> 3) & 1) != 0;
+    VideoCommon::GpuSplit::Get().NoteSemaphoreWrite(
+        address, reduction ? std::nullopt : std::optional<u32>{front_compute_report[2]});
 }
 
 void DmaPusher::RefreshSnapshot(CommandList& list, u64 now) {

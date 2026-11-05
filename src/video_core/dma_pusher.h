@@ -283,6 +283,10 @@ public:
 
     std::array<Engines::EngineInterface*, max_subchannels> subchannels{};
     std::array<Engines::EngineTypes, max_subchannels> subchannel_type;
+    /// SET_REPORT_SEMAPHORE_A-C as the front last saw them on a compute subchannel, so a release
+    /// (D, 0x6c3) can tell the split GPU thread where and what it writes.
+    std::array<u32, 3> front_compute_report{};
+    void FrontNoteComputeReport(u32 method, u32 argument);
 
     Engines::Puller puller;
     std::mutex sync_mutex;
