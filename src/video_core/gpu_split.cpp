@@ -218,7 +218,7 @@ bool GpuSplit::WaitFor(u64 target, DrainSite site) {
     Nx2Profile::Scope scope{Nx2Profile::Zone::WriterWait};
     wait_target.store(target, std::memory_order_seq_cst);
     Publish();
-    const u64 start = Nx2Profile::Enabled() ? Nx2Profile::Now() : 0;
+    const u64 start = Nx2Profile::DrainsEnabled() ? Nx2Profile::Now() : 0;
     for (u32 spins = 0; spins < 256; ++spins) {
         consumed_cache = consumed.load(std::memory_order_acquire);
         if (consumed_cache >= target) {

@@ -71,10 +71,19 @@ inline constexpr std::array<const char*, static_cast<size_t>(Zone::Count)> zone_
 };
 
 // Read once at startup: Enabled() runs several times per method write (no guard to check).
-inline const bool g_enabled = std::getenv("EDEN_NX2_GPU_PROFILE") != nullptr;
+// EDEN_NX2_GPU_PROFILE=drains times only the front's waits for the back: the zones cost the back
+// about 45% of its time.
+inline const char* const g_profile_env = std::getenv("EDEN_NX2_GPU_PROFILE");
+inline const bool g_drains_only =
+    g_profile_env != nullptr && std::string_view{g_profile_env} == "drains";
+inline const bool g_enabled = g_profile_env != nullptr && !g_drains_only;
 
 inline bool Enabled() {
     return g_enabled;
+}
+
+inline bool DrainsEnabled() {
+    return g_enabled || g_drains_only;
 }
 
 // Nanoseconds; from the host's own counter where the wall clock reads it directly (the zones
@@ -156,7 +165,7 @@ inline void Add(Counter counter, u64 amount) {
 
 /// The front waited for the back since `start` (Now) for `site`.
 inline void AddDrain(DrainSite site, u64 start) {
-    if (Enabled()) {
+    if (DrainsEnabled()) {
         const auto index = static_cast<size_t>(site);
         t_data.drain_ns[index] += Now() - start;
         ++t_data.drain_count[index];
@@ -166,7 +175,7 @@ inline void AddDrain(DrainSite site, u64 start) {
 /// Called by the GPU thread (and the split's back thread) between commands: logs and resets
 /// the totals every 10 s.
 inline void Report(const char* thread_name = "GPU thread") {
-    if (!Enabled()) {
+    if (!DrainsEnabled()) {
         return;
     }
     auto& data = t_data;
@@ -189,6 +198,10 @@ inline void Report(const char* thread_name = "GPU thread") {
     }
     data.exclusive_ns[0] = window > zoned ? window - zoned : 0;
     std::string line;
+    if (g_drains_only) {
+        data.exclusive_ns = {};
+        data.count = {};
+    }
     for (size_t i = 0; i < data.exclusive_ns.size(); ++i) {
         if (data.exclusive_ns[i] == 0 && data.count[i] == 0) {
             continue;
