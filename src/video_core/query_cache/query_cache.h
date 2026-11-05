@@ -282,11 +282,13 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
     };
     u8* pointer = impl->device_memory.template GetPointer<u8>(cpu_addr);
     u8* pointer_timestamp = impl->device_memory.template GetPointer<u8>(cpu_addr + 8);
-    // Switch 2 titles read fence-flagged reports back: written when the fence is signaled, before
-    // the GPU produced them, Ocarina's foliage flashed white. They are written once the fence is
-    // reached instead, and freed then; tracking them as pending (as Balanced fences do) made CPU
-    // reads wait for the GPU and its conditional rendering cull the trees' leaves.
-    const bool free_on_run = is_fence && Tegra::g_nx2_ampere.load(std::memory_order_relaxed);
+    // Switch 2 titles read fence-flagged counter reports back: written when the fence is signaled,
+    // before the GPU produced them, Ocarina's foliage flashed white. They are written once the
+    // fence is reached instead. Payload releases carry their value already: delaying them too made
+    // Ocarina's tree leaves flicker under CPU load. Until written only conditional rendering sees
+    // them (delayed_reports); tracking them as pending made CPU reads wait for the GPU.
+    const bool free_on_run = is_fence && counter_type != QueryType::Payload &&
+                             Tegra::g_nx2_ampere.load(std::memory_order_relaxed);
     bool is_synced = (free_on_run || (Settings::IsGPUFenceBehaviorDefault()
                                           ? !Settings::IsGPULevelHigh()
                                           : !Settings::IsGPUFenceBehaviorBalanced() &&
@@ -298,6 +300,10 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
         const auto retire = [&] {
             if (free_on_run) {
                 std::scoped_lock lock(cache_mutex);
+                if (const auto it = delayed_reports.find(cpu_addr);
+                    it != delayed_reports.end() && it->second.raw == query_location.raw) {
+                    delayed_reports.erase(it);
+                }
                 streamer->Free(new_query_id);
             } else if (!is_synced) [[likely]] {
                 impl->pending_unregister.push_back(query_location);
@@ -350,6 +356,10 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
         retire();
     });
     if (free_on_run) {
+        {
+            std::scoped_lock lock(cache_mutex);
+            delayed_reports.insert_or_assign(cpu_addr, query_location);
+        }
         // Queued operations run when the next fence is released; this empty fence is it.
         impl->rasterizer.SyncOperation(std::move(operation));
         impl->rasterizer.SignalFence([] {});
@@ -467,27 +477,30 @@ bool QueryCacheBase<Traits>::AccelerateHostConditionalRendering() {
         }
         VAddr cpu_addr = *cpu_addr_opt;
         std::scoped_lock lock(cache_mutex);
-        auto it1 = cached_queries.find(cpu_addr >> Core::DEVICE_PAGEBITS);
-        if (it1 == cached_queries.end()) {
+        const auto found = [&]() -> std::optional<QueryLocation> {
+            for (const VAddr candidate : {cpu_addr, cpu_addr + 4}) {
+                if (const auto it1 = cached_queries.find(candidate >> Core::DEVICE_PAGEBITS);
+                    it1 != cached_queries.end()) {
+                    if (const auto it = it1->second.find(candidate & Core::DEVICE_PAGEMASK);
+                        it != it1->second.end()) {
+                        return it->second;
+                    }
+                }
+            }
+            for (const VAddr candidate : {cpu_addr, cpu_addr + 4}) {
+                if (const auto it = delayed_reports.find(candidate); it != delayed_reports.end()) {
+                    return it->second;
+                }
+            }
+            return std::nullopt;
+        }();
+        if (!found) {
             return VideoCommon::LookupData{
                 .address = cpu_addr,
                 .found_query = nullptr,
             };
         }
-        auto& sub_container = it1->second;
-        auto it_current = sub_container.find(cpu_addr & Core::DEVICE_PAGEMASK);
-
-        if (it_current == sub_container.end()) {
-            auto it_current_2 = sub_container.find((cpu_addr & Core::DEVICE_PAGEMASK) + 4);
-            if (it_current_2 == sub_container.end()) {
-                return VideoCommon::LookupData{
-                    .address = cpu_addr,
-                    .found_query = nullptr,
-                };
-            }
-            it_current = it_current_2;
-        }
-        auto* query = impl->ObtainQuery(it_current->second);
+        auto* query = impl->ObtainQuery(*found);
         qc_dirty |= True(query->flags & QueryFlagBits::IsHostManaged) &&
                     False(query->flags & QueryFlagBits::IsGuestSynced);
         return VideoCommon::LookupData{
