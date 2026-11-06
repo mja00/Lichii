@@ -398,12 +398,14 @@ jobs:
           ccache --show-stats
 
       - name: Stop sccache on Windows
-        if: always() && matrix.platform == 'windows-x86_64' && steps.compiler-cache.outcome == 'success'
+        if: ${{ !cancelled() && matrix.platform == 'windows-x86_64' && steps.compiler-cache.outcome == 'success' }}
         shell: pwsh
         run: sccache --stop-server
 
+      # A cancelled run would save a near-empty cache that later restores pick as the newest. Branches
+      # can only read their own caches and the default branch's, so run this on nx2 to seed new ones.
       - name: Save compiler objects
-        if: always() && steps.compiler-cache.outcome == 'success'
+        if: ${{ !cancelled() && steps.compiler-cache.outcome == 'success' }}
         uses: actions/cache/save@v5
         with:
           path: |
