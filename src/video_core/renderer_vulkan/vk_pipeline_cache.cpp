@@ -805,10 +805,25 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
         LOG_ERROR(Common_Filesystem, "Failed to create pipeline cache directories");
         return;
     }
+    // Own files: the records carry task/mesh state that builds sharing this cache version cannot
+    // read (plain nx2 hit std::bad_alloc at boot on them). The shared files are copied once.
     pipeline_cache_filename =
-        VideoCommon::VersionedPipelineCachePath(base_dir, "vulkan", CACHE_VERSION);
+        VideoCommon::VersionedPipelineCachePath(base_dir, "vulkan-mesh", CACHE_VERSION);
     used_pipelines_filename =
-        VideoCommon::VersionedPipelineCachePath(base_dir, "vulkan_used", CACHE_VERSION);
+        VideoCommon::VersionedPipelineCachePath(base_dir, "vulkan_used-mesh", CACHE_VERSION);
+    for (const auto& [shared, own] :
+         {std::pair{VideoCommon::VersionedPipelineCachePath(base_dir, "vulkan", CACHE_VERSION),
+                    pipeline_cache_filename},
+          std::pair{VideoCommon::VersionedPipelineCachePath(base_dir, "vulkan_used", CACHE_VERSION),
+                    used_pipelines_filename}}) {
+        std::error_code error;
+        if (!std::filesystem::exists(own, error) && std::filesystem::exists(shared, error)) {
+            std::filesystem::copy_file(shared, own, error);
+            LOG_INFO(Render_Vulkan, "Copied pipeline cache {} to {}{}",
+                     Common::FS::PathToUTF8String(shared), Common::FS::PathToUTF8String(own),
+                     error ? fmt::format(" (failed: {})", error.message()) : std::string{});
+        }
+    }
     used_pipelines = LoadUsedPipelines(used_pipelines_filename, MaxUsedPipelineAge(device));
     used_pipelines_saved = std::chrono::steady_clock::now();
     size_t skipped_pipelines = 0;
@@ -855,9 +870,10 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
         GraphicsPipelineCacheKey key;
         file.read(reinterpret_cast<char*>(&key), sizeof(key));
 
-        // Task/mesh pipelines are not stored (their mesh registers are not in the format); skip
-        // any that were.
-        if (std::ranges::any_of(envs, [](const FileEnvironment& env) {
+        // Task/mesh pipelines carry their mesh registers since this format stored them (no
+        // earlier record of this cache version holds one).
+        if (!device.IsExtMeshShaderSupported() &&
+            std::ranges::any_of(envs, [](const FileEnvironment& env) {
                 return env.ShaderStage() == Shader::Stage::Task ||
                        env.ShaderStage() == Shader::Stage::Mesh;
             })) {
@@ -1438,12 +1454,6 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline() {
     auto pipeline{
         CreateGraphicsPipeline(main_pools, graphics_key, environments.Span(), nullptr, true)};
     if (!pipeline || pipeline_cache_filename.empty()) {
-        return pipeline;
-    }
-    if (pipeline->IsMeshPipeline()) {
-        // Not stored: task and mesh programs are translated with the mesh registers, which the
-        // cache format does not carry. The few of them rebuild quickly from the driver cache.
-        QueueVulkanPipelineCacheFlush();
         return pipeline;
     }
     if (disk_pipelines.contains(graphics_key.Hash())) {
