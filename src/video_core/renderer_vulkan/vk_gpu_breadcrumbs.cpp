@@ -17,6 +17,7 @@ namespace Vulkan {
 
 namespace {
 // Diagnostic builds for players who can only send logs turn this on at build time.
+#define LICHII_GPU_BREADCRUMBS_DEFAULT
 #ifdef LICHII_GPU_BREADCRUMBS_DEFAULT
 constexpr bool DefaultEnabled = true;
 #else
