@@ -261,7 +261,7 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
         OnBack([rasterizer = dma_pusher.rasterizer, sequence_address, properties, payload] {
             rasterizer->Query(sequence_address, VideoCommon::QueryType::Payload, properties, payload, 0);
         });
-        VideoCommon::GpuSplit::Get().NoteSemaphoreWrite(sequence_address, payload);
+        VideoCommon::GpuSplit::Get().NoteSemaphoreWrite(sequence_address);
     } else if (g_nx2_ampere) {
         // Switch 2 waits on semaphores the CPU (or another channel) releases, e.g. once it has
         // written the commands this channel runs next: suspend the channel until the value is
@@ -286,14 +286,6 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
                 const bool page_gpu = Tegra::Nx2IsGpuWritten(*sem_device);
                 if (page_gpu && op != GpuSemaphoreOperation::AcquireGequal) {
                     split.WaitForWriters(VideoCommon::DrainSite::Acquire);
-                }
-                // NVN2 sync payloads only grow: a release queued ahead of this acquire that meets
-                // its value meets it in order on the back, so the front need not wait for it.
-                if (!page_gpu && op == GpuSemaphoreOperation::AcquireGequal) {
-                    if (const auto queued = split.QueuedReleaseValue(acquire.address);
-                        queued && acquire.Matches(*queued)) {
-                        return;
-                    }
                 }
                 if (!page_gpu ||
                     !dma_pusher.rasterizer->MustFlushRegion(*sem_device, sizeof(u32),
@@ -364,7 +356,7 @@ void Puller::ProcessSemaphoreRelease(DmaPusher& dma_pusher) {
         rasterizer->Query(sequence_address, VideoCommon::QueryType::Payload,
                           VideoCommon::QueryPropertiesFlags::IsAFence, payload, 0);
     });
-    VideoCommon::GpuSplit::Get().NoteSemaphoreWrite(sequence_address, payload);
+    VideoCommon::GpuSplit::Get().NoteSemaphoreWrite(sequence_address);
 }
 
 void Puller::ProcessSemaphoreAcquire(DmaPusher& dma_pusher) {

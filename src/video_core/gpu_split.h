@@ -8,7 +8,6 @@
 #include <cstring>
 #include <functional>
 #include <memory>
-#include <optional>
 #include <thread>
 #include <type_traits>
 
@@ -182,24 +181,15 @@ public:
     static constexpr size_t SemSlot(u64 granule) noexcept {
         return static_cast<size_t>((granule ^ (granule >> 10) ^ (granule >> 20)) & (SemSlots - 1));
     }
-    /// `value` is the word a plain release writes at `addr`, when the front knows it.
-    void NoteSemaphoreWrite(u64 addr, std::optional<u32> value = std::nullopt) noexcept {
+    void NoteSemaphoreWrite(u64 addr) noexcept {
         const u64 granule = addr >> 4;
         SemWrite& slot = sem_writes[SemSlot(granule)];
         // Evicting a write the back has not run yet: later lookups can't see it, so wait for it.
         if (slot.granule != granule && slot.position > consumed_cache) {
             sem_evicted_position = std::max(sem_evicted_position, slot.position);
         }
-        slot = {granule, write_position, addr, value.value_or(0), value.has_value()};
+        slot = {granule, write_position};
         last_release_position = write_position;
-    }
-    /// The word the latest queued release to `addr` writes, if the front knows it.
-    [[nodiscard]] std::optional<u32> QueuedReleaseValue(u64 addr) const noexcept {
-        const SemWrite& slot = sem_writes[SemSlot(addr >> 4)];
-        if (slot.granule == addr >> 4 && slot.addr == addr && slot.value_known) {
-            return slot.value;
-        }
-        return std::nullopt;
     }
     void NoteAnyRelease() noexcept {
         last_release_position = write_position;
@@ -283,9 +273,6 @@ private:
     struct SemWrite {
         u64 granule{~u64{0}};
         u64 position{};
-        u64 addr{};
-        u32 value{};
-        bool value_known{};
     };
     std::array<SemWrite, SemSlots> sem_writes{};
     u64 sem_evicted_position{};

@@ -607,7 +607,7 @@ void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {
 
 void DmaPusher::FrontNoteComputeReport(u32 method, u32 argument) {
     // SET_REPORT_SEMAPHORE_A-D: KeplerCompute::ProcessNativeReportSemaphore runs D on the back.
-    if (method >= 0x6c0 && method < 0x6c3) {
+    if (method == 0x6c0 || method == 0x6c1) {
         front_compute_report[method - 0x6c0] = argument;
         return;
     }
@@ -618,11 +618,8 @@ void DmaPusher::FrontNoteComputeReport(u32 method, u32 argument) {
     if (operation != 0 && operation != 2) {
         return;
     }
-    const GPUVAddr address =
-        (GPUVAddr{front_compute_report[0] & 0x1ffffff} << 32) | front_compute_report[1];
-    const bool reduction = ((argument >> 3) & 1) != 0;
     VideoCommon::GpuSplit::Get().NoteSemaphoreWrite(
-        address, reduction ? std::nullopt : std::optional<u32>{front_compute_report[2]});
+        (GPUVAddr{front_compute_report[0] & 0x1ffffff} << 32) | front_compute_report[1]);
 }
 
 void DmaPusher::RefreshSnapshot(CommandList& list, u64 now) {
