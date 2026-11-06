@@ -1210,11 +1210,28 @@ GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) const
     if (!use_asynchronous_shaders) {
         return pipeline;
     }
+    static const bool discard_native = [] {
+        const char* value = std::getenv("EDEN_NX2_ASYNC_DISCARD");
+        const bool enabled = value != nullptr && value[0] == '1';
+        if (enabled) {
+            LOG_INFO(Render_Vulkan, "EDEN_NX2_ASYNC_DISCARD: native draws skip unbuilt pipelines");
+        }
+        return enabled;
+    }();
     const auto& draw_state = maxwell3d->draw_manager.draw_state;
     const bool discard = CanDiscardPendingDraw(maxwell3d->GetNativeMacroEngine().native_turing,
                                               maxwell3d->regs.zeta_enable != 0,
                                               draw_state.draw_element_count,
-                                              draw_state.draw_element_count);
+                                              draw_state.draw_element_count, discard_native);
+    if (discard) {
+        static std::atomic<u64> skipped{};
+        if ((skipped.fetch_add(1, std::memory_order_relaxed) & 255) == 0) {
+            // Counts lookups, not draws: a draw state can look its pipeline up more than once.
+            LOG_INFO(Render_Vulkan,
+                     "Async shaders: {} pipeline lookups skipped for unbuilt pipelines",
+                     skipped.load(std::memory_order_relaxed));
+        }
+    }
     return discard ? nullptr : pipeline;
 }
 
