@@ -168,6 +168,7 @@ void Load(VkDevice device, DeviceDispatch& dld) noexcept {
     X(vkCmdSetColorBlendEquationEXT);
     X(vkCmdResetQueryPool);
     X(vkCmdWriteTimestamp);
+    X(vkCmdWriteBufferMarkerAMD);
     X(vkCmdResolveImage);
     X(vkCreateBuffer);
     X(vkCreateBufferView);

@@ -8,6 +8,7 @@
 
 #include <ranges>
 #include "common/settings.h"
+#include "video_core/renderer_vulkan/vk_gpu_breadcrumbs.h"
 #include "video_core/renderer_vulkan/vk_master_semaphore.h"
 #include "video_core/vulkan_common/vulkan_device.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
@@ -105,11 +106,22 @@ void MasterSemaphore::Wait(u64 tick) {
 
     // If none of the above is hit, fallback to a regular wait
     try {
-        while (!semaphore.Wait(tick)) {
+        // A healthy GPU passes any tick within a frame or two; after 2 s say what it was doing
+        // (a hang often ends in a driver reset that later surfaces as an unrelated failure).
+        bool reported = false;
+        while (!semaphore.Wait(tick,
+                               reported ? (std::numeric_limits<u64>::max)() : u64{2'000'000'000})) {
+            if (!reported) {
+                reported = true;
+                LOG_CRITICAL(Render_Vulkan, "GPU has not reached tick {} after 2 s (at {})", tick,
+                             semaphore.GetCounter());
+                GpuBreadcrumbs::Get().Dump("GPU wait over 2 s");
+            }
         }
     } catch (const vk::Exception& exception) {
         // The throw ends the process; say why first (a device loss reached nothing else here).
         LOG_CRITICAL(Render_Vulkan, "Waiting for GPU tick {} failed: {}", tick, exception.what());
+        GpuBreadcrumbs::Get().Dump("GPU wait failed");
         throw;
     }
 

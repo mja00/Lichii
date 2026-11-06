@@ -245,6 +245,7 @@ struct DeviceDispatch : InstanceDispatch {
     PFN_vkCmdPushDescriptorSetWithTemplateKHR vkCmdPushDescriptorSetWithTemplateKHR{};
     PFN_vkCmdResetQueryPool vkCmdResetQueryPool{};
     PFN_vkCmdWriteTimestamp vkCmdWriteTimestamp{};
+    PFN_vkCmdWriteBufferMarkerAMD vkCmdWriteBufferMarkerAMD{};
     PFN_vkCmdResolveImage vkCmdResolveImage{};
     PFN_vkCmdSetBlendConstants vkCmdSetBlendConstants{};
     PFN_vkCmdSetCullModeEXT vkCmdSetCullModeEXT{};
@@ -1282,6 +1283,11 @@ public:
     void WriteTimestamp(VkPipelineStageFlagBits stage, VkQueryPool query_pool,
                         u32 query) const noexcept {
         dld->vkCmdWriteTimestamp(handle, stage, query_pool, query);
+    }
+
+    void WriteBufferMarkerAMD(VkPipelineStageFlagBits stage, VkBuffer buffer, VkDeviceSize offset,
+                              u32 marker) const noexcept {
+        dld->vkCmdWriteBufferMarkerAMD(handle, stage, buffer, offset, marker);
     }
 
     void BindDescriptorSets(VkPipelineBindPoint bind_point, VkPipelineLayout layout, u32 first,

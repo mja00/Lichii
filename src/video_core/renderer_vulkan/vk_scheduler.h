@@ -25,6 +25,7 @@
 #include "common/polyfill_thread.h"
 #include "common/settings.h"
 #include "video_core/gpu_split.h"
+#include "video_core/renderer_vulkan/vk_gpu_breadcrumbs.h"
 #include "video_core/renderer_vulkan/vk_master_semaphore.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 
@@ -86,6 +87,17 @@ public:
     template <typename Func>
     void TraceGpuWork(vk::CommandBuffer cmdbuf, u64 hash, u64 fragment_hash,
                       std::array<u32, 3> size, Func&& work) {
+        if (auto& breadcrumbs = GpuBreadcrumbs::Get(); breadcrumbs.Enabled()) [[unlikely]] {
+            breadcrumbs.Wrap(cmdbuf, hash, fragment_hash, size,
+                             [&] { TraceGpuWorkTimed(cmdbuf, hash, fragment_hash, size, work); });
+            return;
+        }
+        TraceGpuWorkTimed(cmdbuf, hash, fragment_hash, size, work);
+    }
+
+    template <typename Func>
+    void TraceGpuWorkTimed(vk::CommandBuffer cmdbuf, u64 hash, u64 fragment_hash,
+                           std::array<u32, 3> size, Func&& work) {
         if (!trace_gpu_recording || !trace_work_pool || trace_work_count == TraceMaxWork) {
             work();
             return;
