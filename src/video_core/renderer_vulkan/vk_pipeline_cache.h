@@ -46,6 +46,10 @@ namespace Shader::IR {
 struct Program;
 }
 
+namespace Shader::Optimization {
+enum class OotFog; // shader_recompiler/ir_opt/oot_visual_workaround.h
+}
+
 namespace VideoCore {
 class ShaderNotify;
 }
@@ -176,6 +180,8 @@ private:
     /// Native draws skip pipelines still building (EDEN_NX2_ASYNC_DISCARD, on for Ocarina).
     bool discard_native_draws{};
     bool use_vulkan_pipeline_cache{};
+    Shader::Optimization::OotFog oot_fog{};
+    u64 visual_workaround_title{};
 
     GraphicsPipelineCacheKey graphics_key{};
     GraphicsPipeline* current_pipeline{};

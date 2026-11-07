@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
+#include <cstdlib>
 #include <fstream>
 #include <cstdlib>
 #include <iostream>
@@ -14,6 +15,7 @@
 #include <optional>
 #include <ranges>
 #include <span>
+#include <string_view>
 #include <thread>
 #include <vector>
 #include <bit>
@@ -30,6 +32,7 @@
 #include "shader_recompiler/frontend/maxwell/control_flow.h"
 #include "shader_recompiler/frontend/maxwell/translate_program.h"
 #include "shader_recompiler/ir_opt/passes.h"
+#include "shader_recompiler/ir_opt/oot_visual_workaround.h"
 #include "shader_recompiler/program_header.h"
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/engines/maxwell_3d.h"
@@ -429,6 +432,7 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
       discard_native_draws{use_asynchronous_shaders && DiscardNativeDraws()},
       use_vulkan_pipeline_cache{Settings::values.use_vulkan_driver_pipeline_cache.GetValue() &&
                                 !DriverCachesPipelines(device_)},
+      oot_fog{Shader::Optimization::OotFogFromEnvironment()},
       workers(device.HasBrokenParallelShaderCompiling() ? 1ULL : GetTotalPipelineWorkers(),
               "VkPipelineBuilder", {}, Common::ThreadPlacement::Background),
       serialization_thread(1, "VkPipelineSerialization", {},
@@ -808,6 +812,7 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() {
 
 void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading,
                                       const VideoCore::DiskResourceLoadCallback& callback) {
+    visual_workaround_title = title_id;
     if (title_id == 0) {
         return;
     }
@@ -1322,6 +1327,14 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
             programs[index] = MergeDualVertexPrograms(program_va, program_vb, env);
         }
 
+        if (const auto edits = Shader::Optimization::ApplyOotVisualWorkaround(
+                programs[index], program_id != 0 ? program_id : visual_workaround_title,
+                key.unique_hashes[index],
+                oot_fog)) {
+            LOG_WARNING(Render_Vulkan,
+                        "TEMPORARY OoT visual workaround: shader {:016x}, {} scalar edits",
+                        key.unique_hashes[index], *edits);
+        }
         if (device.GetDriverID() != VK_DRIVER_ID_NVIDIA_PROPRIETARY && Shader::Optimization::HasBrokenPattern(programs[index])) {
             LOG_WARNING(Render_Vulkan, "0x{:016x}: Skipping shader with known issues", key.unique_hashes[index]);
             return nullptr;
@@ -1579,6 +1592,13 @@ ComputePipelineCacheEntry PipelineCache::CreateComputePipeline(
     }
 
     auto program{TranslateProgram(pools.inst, pools.block, env, cfg, host_info)};
+    if (const auto edits = Shader::Optimization::ApplyOotVisualWorkaround(
+            program, program_id != 0 ? program_id : visual_workaround_title, key.unique_hash,
+            oot_fog)) {
+        LOG_WARNING(Render_Vulkan,
+                    "TEMPORARY OoT visual workaround: shader {:016x}, {} scalar edits",
+                    key.unique_hash, *edits);
+    }
     const VkDriverIdKHR driver_id = device.GetDriverID();
     const bool needs_shared_mem_clamp =
         driver_id == VK_DRIVER_ID_QUALCOMM_PROPRIETARY ||
