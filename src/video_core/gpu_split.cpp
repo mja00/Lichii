@@ -138,6 +138,9 @@ void GpuSplit::Stop() {
     ring.reset();
     write_position = 0;
     last_writer_position = 0;
+    last_memory_writer_position = 0;
+    last_unranged_position = 0;
+    pending_write_count = 0;
     last_sync_position = 0;
     last_release_position = 0;
     sem_writes.fill({});
@@ -341,6 +344,7 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
     on_back_thread = true;
     back_running.store(true, std::memory_order_release);
     Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
+    Common::PinCurrentThread(Common::PinnedRole::GpuBack);
     Common::SetCurrentThreadToPerformanceCores();
     system->RegisterHostThread();
 #ifdef _WIN32

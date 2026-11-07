@@ -3390,6 +3390,11 @@ private:
                     bool is_last_call, bool from_macro);
     void FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split, FrontState& state);
     void FrontNoteReport(VideoCommon::GpuSplit& split, const FrontState& state);
+    void FrontNoteMemoryWrite(VideoCommon::GpuSplit& split, FrontState& state, u32 method,
+                              const u32* words, u32 count);
+    void FrontNoteRangedWrite(VideoCommon::GpuSplit& split, GPUVAddr address, u64 size);
+    void FrontNoteConstantBufferWrite(VideoCommon::GpuSplit& split, const FrontState& state,
+                                      u32 bytes);
     void FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& state, u32 macro, u32 method,
                       u32 count);
     void FrontVerify(VideoCommon::GpuSplit& split, FrontState& state);

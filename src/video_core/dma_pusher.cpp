@@ -488,10 +488,16 @@ void DmaPusher::CallMethod(u32 argument) {
                             (dma_state.method >= MacroRegistersStart ||
                              (dma_state.method < subchannel->execution_mask.size() &&
                               subchannel->execution_mask[dma_state.method]));
+        // KeplerMemory and Fermi2D methods write guest memory at addresses the front cannot
+        // range: macro DMA read snapshots must not skip the drain across them.
+        const bool memory_writer = engine_type == Engines::EngineTypes::KeplerMemory ||
+                                   engine_type == Engines::EngineTypes::Fermi2D;
         SCOPE_EXIT {
             if (writer) {
                 split.NoteWriter();
                 split.NoteAnyRelease();
+            } else if (memory_writer) {
+                split.NoteUnrangedWriter();
             }
             if (engine_type == Engines::EngineTypes::KeplerCompute && split.Active()) {
                 FrontNoteComputeReport(dma_state.method, argument);
@@ -562,10 +568,16 @@ void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {
                 }
             }
         }
+        // KeplerMemory and Fermi2D methods write guest memory at addresses the front cannot
+        // range: macro DMA read snapshots must not skip the drain across them.
+        const bool memory_writer = engine_type == Engines::EngineTypes::KeplerMemory ||
+                                   engine_type == Engines::EngineTypes::Fermi2D;
         SCOPE_EXIT {
             if (writer) {
                 split.NoteWriter();
                 split.NoteAnyRelease();
+            } else if (memory_writer) {
+                split.NoteUnrangedWriter();
             }
             if (engine_type == Engines::EngineTypes::KeplerCompute && split.Active()) {
                 for (u32 i = 0; i < num_methods; ++i) {
@@ -618,8 +630,15 @@ void DmaPusher::FrontNoteComputeReport(u32 method, u32 argument) {
     if (operation != 0 && operation != 2) {
         return;
     }
-    VideoCommon::GpuSplit::Get().NoteSemaphoreWrite(
-        (GPUVAddr{front_compute_report[0] & 0x1ffffff} << 32) | front_compute_report[1]);
+    const GPUVAddr address =
+        (GPUVAddr{front_compute_report[0] & 0x1ffffff} << 32) | front_compute_report[1];
+    auto& split = VideoCommon::GpuSplit::Get();
+    split.NoteSemaphoreWrite(address);
+    // The report's payload and timestamp land at its address when the back runs it.
+    if (const auto device = memory_manager.GpuToCpuAddress(address)) {
+        split.NoteMemoryWriter();
+        split.NoteMemoryWrite(*device, 16);
+    }
 }
 
 void DmaPusher::RefreshSnapshot(CommandList& list, u64 now) {

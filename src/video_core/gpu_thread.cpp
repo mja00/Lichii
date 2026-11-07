@@ -56,6 +56,7 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
         const Common::DkbCpuTrace::Registration cpu_trace{Common::DkbCpuTrace::Role::GpuCommand};
         Common::SetCurrentThreadName("GPU");
         Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
+        Common::PinCurrentThread(Common::PinnedRole::GpuFront);
         Common::SetCurrentThreadToPerformanceCores();
         system.RegisterHostThread();
         Tegra::Nx2SemaphoreWaiters::Get().SetWakeEvent(&state.pending_wake);
@@ -166,13 +167,19 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
                         split.DeferFunction(std::move(wrapped));
                         split.Drain(VideoCommon::DrainSite::Map);
                     } else {
+                        // A run command (unmap, release) can copy GPU data to guest memory at
+                        // addresses the front cannot range.
                         split.DeferFunction(std::move(wrapped));
+                        split.NoteUnrangedWriter();
                     }
                 } else if (const auto* flush = std::get_if<FlushRegionCommand>(&next.data)) {
                     split.Defer([rasterizer_ptr, addr = flush->addr, size = flush->size] {
                         Profile::Scope scope{Profile::Zone::FlushInvalidate};
                         rasterizer_ptr->FlushRegion(addr, size);
                     });
+                    // The flush writes the GPU's data of [addr, addr + size) to guest memory.
+                    split.NoteMemoryWriter();
+                    split.NoteMemoryWrite(flush->addr, flush->size);
                 } else if (const auto* invalidate = std::get_if<InvalidateRegionCommand>(&next.data)) {
                     split.Defer([rasterizer_ptr, addr = invalidate->addr, size = invalidate->size] {
                         Profile::Scope scope{Profile::Zone::FlushInvalidate};

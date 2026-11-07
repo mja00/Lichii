@@ -63,14 +63,19 @@ public:
     }
 
     void FlushRegion(VAddr addr, std::size_t size) {
+        if (SemiFlushRegion(addr, size)) {
+            RequestGuestHostSync();
+        }
+    }
+
+    /// Writes out the finalized reports in the region. True when some still wait for host results.
+    bool SemiFlushRegion(VAddr addr, std::size_t size) {
         bool result = false;
         IterateCache<false>(addr, size, [this, &result](QueryLocation location) {
             result |= SemiFlushQueryDirty(location);
             return result;
         });
-        if (result) {
-            RequestGuestHostSync();
-        }
+        return result;
     }
 
     static u64 BuildMask(std::span<const QueryType> types) {
@@ -79,6 +84,36 @@ public:
             mask |= 1ULL << (static_cast<u64>(query_type));
         }
         return mask;
+    }
+
+    /// Whether a report in the region is still listed (pending host results, or written and not
+    /// unregistered yet), or a fence-flagged one that has not landed in guest memory yet
+    /// (delayed_reports). Only the cache mutex: callable from the split front.
+    [[nodiscard]] bool HasCachedReports(VAddr addr, size_t size) {
+        const u64 addr_begin = addr;
+        const u64 addr_end = addr_begin + size;
+        std::scoped_lock lock(cache_mutex);
+        for (u64 page = addr_begin >> Core::DEVICE_PAGEBITS;
+             page <= addr_end >> Core::DEVICE_PAGEBITS; ++page) {
+            const auto it = cached_queries.find(page);
+            if (it == std::end(cached_queries)) {
+                continue;
+            }
+            const u64 page_start = page << Core::DEVICE_PAGEBITS;
+            for (const auto& entry : it->second) {
+                const u64 begin = page_start + entry.first;
+                if (begin < addr_end && addr_begin < begin + sizeof(u32)) {
+                    return true;
+                }
+            }
+        }
+        // A report that waits for its fence writes up to 16 bytes at its address when it lands.
+        for (const auto& entry : delayed_reports) {
+            if (entry.first < addr_end && addr_begin < entry.first + 16) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /// Return true when a CPU region is modified from the GPU
@@ -142,10 +177,12 @@ protected:
                 continue;
             }
             auto& contents = it->second;
+            bool matched = false;
             for (auto& query : contents) {
                 if (!in_range(query.first)) {
                     continue;
                 }
+                matched = true;
                 if constexpr (RETURNS_BOOL) {
                     if (func(query.second)) {
                         return;
@@ -154,7 +191,11 @@ protected:
                     func(query.second);
                 }
             }
+            // Only pages with a query in the range: the scan above already found none elsewhere.
             if constexpr (remove_from_cache) {
+                if (!matched) {
+                    continue;
+                }
                 const auto in_range2 = [&](const std::pair<u32, QueryLocation>& pair) {
                     return in_range(pair.first);
                 };

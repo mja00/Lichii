@@ -58,6 +58,19 @@ void OnBack(const Func& func) {
     }
 }
 
+// A semaphore or fence release just queued for the split's back writes guest memory there: note
+// the range (and the writer) for macro DMA read snapshots. A fence's payload is one 4-byte word
+// (RELEASE_SIZE), other releases write up to 16 bytes (payload and timestamp).
+void NoteReleaseWrite(DmaPusher& dma_pusher, GPUVAddr address, bool fence) {
+    auto& split = VideoCommon::GpuSplit::Get();
+    split.NoteMemoryWriter();
+    if (const auto device = dma_pusher.memory_manager.GpuToCpuAddress(address)) {
+        split.NoteMemoryWrite(*device, fence ? sizeof(u32) : 16);
+        return;
+    }
+    split.NoteUnrangedWriter(); // The query writes nothing at an unmapped address.
+}
+
 void DrainBack() {
     VideoCommon::GpuSplit::Get().Drain(VideoCommon::DrainSite::Acquire);
 }
@@ -262,6 +275,8 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
             rasterizer->Query(sequence_address, VideoCommon::QueryType::Payload, properties, payload, 0);
         });
         VideoCommon::GpuSplit::Get().NoteSemaphoreWrite(sequence_address);
+        NoteReleaseWrite(dma_pusher, sequence_address,
+                         g_nx2_ampere && (regs.semaphore_trigger & (1U << 24)) != 0);
     } else if (g_nx2_ampere) {
         // Switch 2 waits on semaphores the CPU (or another channel) releases, e.g. once it has
         // written the commands this channel runs next: suspend the channel until the value is
@@ -357,6 +372,7 @@ void Puller::ProcessSemaphoreRelease(DmaPusher& dma_pusher) {
                           VideoCommon::QueryPropertiesFlags::IsAFence, payload, 0);
     });
     VideoCommon::GpuSplit::Get().NoteSemaphoreWrite(sequence_address);
+    NoteReleaseWrite(dma_pusher, sequence_address, true);
 }
 
 void Puller::ProcessSemaphoreAcquire(DmaPusher& dma_pusher) {
@@ -387,6 +403,7 @@ void Puller::ProcessSemaphoreExecute(DmaPusher& dma_pusher, u32 argument) {
                               VideoCommon::QueryPropertiesFlags::IsAFence, payload, 0);
         });
         VideoCommon::GpuSplit::Get().NoteSemaphoreWrite(address);
+        NoteReleaseWrite(dma_pusher, address, true);
         return;
     }
     // Acquires: check once after flushing pending fences; never block the GPU thread on them.
@@ -435,6 +452,8 @@ void Puller::CallPullerMethod(DmaPusher& dma_pusher, const MethodCall& method_ca
         break;
     case BufferMethods::SyncpointOperation:
         ProcessFenceActionMethod(dma_pusher);
+        // A fence increment writes the syncpoint's memory where the front cannot range it.
+        VideoCommon::GpuSplit::Get().NoteUnrangedWriter();
         break;
     case BufferMethods::WaitForIdle:
         OnBack([rasterizer = dma_pusher.rasterizer] { rasterizer->WaitForIdle(); });

@@ -254,6 +254,13 @@ public:
     /// Cancels pending downloads over the range, so a fence can't write them over newer bytes.
     void ClearDownload(DAddr base_addr, u64 size);
 
+    /// CPU writes collected but not yet applied (SetPendingCpuWrites).
+    [[nodiscard]] Common::RangeSet<DAddr> PendingCpuWriteRanges();
+
+    /// Writes downloaded bytes to guest memory, except over `cpu_written`.
+    void WriteDownloadedMemory(const Common::RangeSet<DAddr>& cpu_written, DAddr device_addr,
+                               const u8* data, u64 size);
+
     bool OnCPUWrite(DAddr device_addr, u64 size);
 
     void DownloadMemory(DAddr device_addr, u64 size);
@@ -315,6 +322,18 @@ public:
                                                           ObtainBufferSynchronize sync_info,
                                                           ObtainBufferOperation post_op);
     void FlushCachedWrites();
+
+    /// Where the CPU writes into GPU-written memory that were collected but not applied yet
+    /// (WriteMemory) come from: downloads must not write the GPU's older copy over them.
+    using PendingCpuWrites = std::function<void(const std::function<void(DAddr, size_t)>&)>;
+    void SetPendingCpuWrites(PendingCpuWrites source) {
+        pending_cpu_writes = std::move(source);
+    }
+
+    /// Takes CPU writes about to be applied one by one out of the GPU-written ranges first, so
+    /// applying one doesn't download the GPU's copy over another (WriteMemory keeps the GPU data
+    /// on the pages it writes).
+    void ClaimCpuWrites(std::span<const std::pair<DAddr, u64>> ranges);
 
     /// Return true when there are uncommitted buffers to be downloaded
     [[nodiscard]] bool HasUncommittedFlushes() const noexcept;
@@ -674,24 +693,25 @@ private:
         if (!exact) {
             if (memory_tracker.IsRegionPreflushable(device_addr, size)) {
                 uncommitted_gpu_modified_ranges.Add(device_addr, size);
-            } else {
-                ArmReadTraps(device_addr, size);
             }
+            // Preflushed writes arm the read traps too: their data reaches guest memory only when
+            // the fence's download lands, and a read before that saw stale words (Ocarina of
+            // Time's whole screen flashed white at the sword boulder). The trapped read flushes
+            // on demand only while the data is still in flight (GetFlushArea).
+            ArmReadTraps(device_addr, size);
             return;
         }
         const DAddr end = device_addr + size;
-        u64 queued = 0;
         memory_tracker.ForEachPreflushableRange(device_addr, size, [&](DAddr begin, u64 length) {
             const DAddr lower = (std::max)(begin, device_addr);
             const DAddr upper = (std::min)(begin + length, end);
             if (lower < upper) {
                 uncommitted_gpu_modified_ranges.Add(lower, upper - lower);
-                queued += upper - lower;
             }
         });
-        if (queued < size) {
-            ArmReadTraps(device_addr, size);
-        }
+        // Writes the fence will not download still need their read traps (the preflushed ones
+        // are queued above): a read before the download lands sees stale words.
+        ArmReadTraps(device_addr, size);
     }
 
     /// GPU writes that are not downloaded at fences: trap the guest CPU's next read of their
@@ -720,6 +740,7 @@ private:
     /// fence pops. A write to a range after a download was taken removes it from that download
     /// (and every other pending one): its bytes are older than the write.
     std::deque<Common::RangeSet<DAddr>> pending_download_ranges;
+    PendingCpuWrites pending_cpu_writes;
     std::optional<Async_Buffer> current_buffer;
 
     std::deque<Async_Buffer> async_buffers_death_ring;
