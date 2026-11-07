@@ -4,9 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       publish_release:
-        description: Publish the binaries as a GitHub release
+        description: Publish the binaries as a GitHub pre-release (build-N)
         type: boolean
         default: true
+      draft_version:
+        description: Instead, make a draft release "Lichii OOT v<this>" (tag lichii-oot-v<this>), e.g. 2.2
+        type: string
+        default: ""
   push:
     branches:
       - nx2-experimental
@@ -48,7 +52,7 @@ jobs:
       contents: write
     steps:
       - name: Prepare release tag
-        if: github.event_name == 'push' || inputs.publish_release
+        if: github.event_name == 'push' || (inputs.publish_release && inputs.draft_version == '')
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -612,13 +616,13 @@ jobs:
           compression-level: 0
           retention-days: 7
 
-  # Publishes every binary as a GitHub pre-release once every platform built: on pushes to
-  # nx2-experimental, and on manual runs unless "Publish the binaries as a GitHub release" is
-  # unticked.
+  # Publishes every binary once every platform built: as a build-N pre-release on pushes to
+  # nx2-experimental and on manual runs with "publish" ticked, or as a draft release when a manual
+  # run names a draft_version.
   release:
     name: Publish release
     needs: build
-    if: github.event_name == 'push' || inputs.publish_release
+    if: github.event_name == 'push' || inputs.publish_release || inputs.draft_version != ''
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -658,19 +662,26 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          DRAFT_VERSION: ${{ inputs.draft_version }}
         run: |
           set -euo pipefail
-          tag_sha=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/build-${GITHUB_RUN_NUMBER}" --jq '.object.sha')
-          if [ "$tag_sha" != "$GITHUB_SHA" ]; then
-            echo "Release tag build-${GITHUB_RUN_NUMBER} points to $tag_sha instead of $GITHUB_SHA"
-            exit 1
+          if [ -n "$DRAFT_VERSION" ]; then
+            if ! [[ "$DRAFT_VERSION" =~ ^[0-9]+(\.[0-9]+)*$ ]]; then
+              echo "draft_version must look like 2.2, not '$DRAFT_VERSION'"
+              exit 1
+            fi
+            tag="lichii-oot-v${DRAFT_VERSION}"
+          else
+            tag="build-${GITHUB_RUN_NUMBER}"
+            tag_sha=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" --jq '.object.sha')
+            if [ "$tag_sha" != "$GITHUB_SHA" ]; then
+              echo "Release tag ${tag} points to $tag_sha instead of $GITHUB_SHA"
+              exit 1
+            fi
           fi
-          tag="build-${GITHUB_RUN_NUMBER}"
           base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}"
 
-          cat > notes.md <<EOF
-          Automatic build of \`${GITHUB_REF_NAME}\` at ${GITHUB_SHA}.
-
+          cat > downloads.md <<EOF
           ## Linux
 
           Linux packages come as an AppImage (self-contained, needs glibc 2.39 or newer: Ubuntu 24.04, Fedora 40, Debian 13, Arch) and a tar.gz (uses your system libraries, so Qt 6 and the usual libraries must be installed).
@@ -698,9 +709,31 @@ jobs:
           The PGO builds are the same programs compiled with profile-guided optimization (clang plus Eglantine's profile); prefer them when your CPU supports it.
           EOF
 
-          gh release create "${tag}" dist/* \
-            --repo "${GITHUB_REPOSITORY}" \
-            --verify-tag \
-            --prerelease \
-            --title "Lichii ${GITHUB_REF_NAME} build ${GITHUB_RUN_NUMBER} (${GITHUB_SHA::7})" \
-            --notes-file notes.md
+          if [ -n "$DRAFT_VERSION" ]; then
+            # A rerun replaces the binaries of the draft it made; a published release is never touched.
+            if is_draft=$(gh release view "$tag" --repo "${GITHUB_REPOSITORY}" --json isDraft --jq .isDraft 2>/dev/null); then
+              if [ "$is_draft" != true ]; then
+                echo "${tag} is already published"
+                exit 1
+              fi
+              gh release upload "$tag" dist/* --repo "${GITHUB_REPOSITORY}" --clobber
+              exit 0
+            fi
+            { printf '# v%s\n\n## Fixes\n- \n\n## Performance\n- \n\n## Known issues\n- \n\n' "$DRAFT_VERSION"
+              cat downloads.md; } > notes.md
+            gh release create "$tag" dist/* \
+              --repo "${GITHUB_REPOSITORY}" \
+              --draft \
+              --target "$GITHUB_SHA" \
+              --title "Lichii OOT v${DRAFT_VERSION}" \
+              --notes-file notes.md
+          else
+            { printf "Automatic build of \`%s\` at %s.\n\n" "$GITHUB_REF_NAME" "$GITHUB_SHA"
+              cat downloads.md; } > notes.md
+            gh release create "$tag" dist/* \
+              --repo "${GITHUB_REPOSITORY}" \
+              --verify-tag \
+              --prerelease \
+              --title "Lichii ${GITHUB_REF_NAME} build ${GITHUB_RUN_NUMBER} (${GITHUB_SHA::7})" \
+              --notes-file notes.md
+          fi
