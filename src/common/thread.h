@@ -119,6 +119,12 @@ enum class ThreadPlacement : u32 {
 void SetCurrentThreadPriority(ThreadPriority new_priority);
 void SetCurrentThreadName(const char* name);
 void SetCurrentThreadToPerformanceCores();
+
+/// EDEN_NX2_PIN_THREADS (Windows, Linux): the split GPU thread's front and back each get a whole
+/// physical core and the guest cores keep off them, so no SMT sibling shares a GPU thread's core.
+enum class PinnedRole : u32 { GpuFront, GpuBack, GuestCore };
+void PinCurrentThread(PinnedRole role);
+
 void SetCurrentThreadToEfficiencyCores();
 void SetCurrentThreadToBackgroundWork();
 void SetCurrentThreadToAllCores();
