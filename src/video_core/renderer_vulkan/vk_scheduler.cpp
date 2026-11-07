@@ -112,6 +112,16 @@ Scheduler::Scheduler(const Device& device_, StateTracker& state_tracker_)
     : device{device_}, state_tracker{state_tracker_},
       master_semaphore{std::make_unique<MasterSemaphore>(device)},
       command_pool{std::make_unique<CommandPool>(*master_semaphore, device)} {
+    // Fences come one per compute release: ~11,500 a second in Hyrule Warriors: Age of
+    // Imprisonment fights, each a queue submission, so they are batched within 500 us (~10-15%
+    // more fps there). Ocarina of Time flashed white with the batch and ran faster without it
+    // (Lake Hylia 52.3 -> 55.4 fps, EvilOOT's fix in Frizti v3).
+    constexpr u64 OcarinaOfTimeProgramId = 0x0400486024DEC000ULL;
+    if (const char* value = std::getenv("EDEN_NX2_FENCE_FLUSH_US"); value != nullptr) {
+        fence_flush_interval_us = static_cast<s64>(std::atoll(value));
+    } else if (Settings::GetCurrentProgramID() == OcarinaOfTimeProgramId) {
+        fence_flush_interval_us = 0;
+    }
 
     if (Common::DkbFrameTrace::Enabled()) {
         const auto physical = device.GetPhysical();
@@ -180,15 +190,7 @@ u64 Scheduler::Flush(VkSemaphore signal_semaphore, VkSemaphore wait_semaphore,
 }
 
 bool Scheduler::DeferFlush() {
-    // Fences come one per compute release: ~11,500 a second in Hyrule Warriors: Age of
-    // Imprisonment fights, each a queue submission (~22,000 a second with the others), which
-    // kept the Vulkan worker busy submitting. Batched within 500 us: ~10-15% more fps there.
-    // Command list copies after dispatches were ~9,000 more a second, of which the front waited
-    // for about 5%.
-    static const s64 interval_us = [] {
-        const char* value = std::getenv("EDEN_NX2_FENCE_FLUSH_US");
-        return value == nullptr ? s64{500} : static_cast<s64>(std::atoll(value));
-    }();
+    const s64 interval_us = fence_flush_interval_us;
     if (interval_us <= 0 || !VideoCommon::GpuSplit::OnBackThread() ||
         std::chrono::steady_clock::now() - last_flush >= std::chrono::microseconds{interval_us}) {
         return false;

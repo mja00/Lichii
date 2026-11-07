@@ -60,9 +60,10 @@ public:
                 std::source_location location = std::source_location::current());
 
     /// On the split GPU thread, a fence or a command list copy submits only if the last
-    /// submission is older than a window (EDEN_NX2_FENCE_FLUSH_US, default 500 us, 0 submits at
-    /// once); otherwise it goes with the next one. The back submits deferred work before it
-    /// sleeps and when another thread asks (WaitSubmitted). True when the flush was deferred.
+    /// submission is older than a window (EDEN_NX2_FENCE_FLUSH_US, default 500 us and 0 for
+    /// Ocarina of Time; 0 submits at once); otherwise it goes with the next one. The back submits
+    /// deferred work before it sleeps and when another thread asks (WaitSubmitted). True when the
+    /// flush was deferred.
     bool DeferFlush();
     /// Submits deferred work (the split's back, from its idle hook).
     void FlushDeferred();
@@ -322,6 +323,7 @@ public:
 private:
     std::chrono::steady_clock::time_point last_flush{};
     bool flush_pending{};
+    s64 fence_flush_interval_us{500};
 
     class Command {
     public:

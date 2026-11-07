@@ -11,6 +11,8 @@
 #include <cstdlib>
 #include <iostream>
 #include <memory>
+#include <optional>
+#include <ranges>
 #include <span>
 #include <thread>
 #include <vector>
@@ -392,6 +394,20 @@ bool DriverCachesPipelines(const Device& device) {
         return false;
     }
 }
+
+// EDEN_NX2_ASYNC_DISCARD: native draws whose pipeline is still building are skipped instead of
+// waited for. On by default for Ocarina of Time, where draws waited 7.5 s for unbuilt pipelines
+// in a 25 min session (Frizti v3); =0 waits, =1 skips for every game.
+bool DiscardNativeDraws() {
+    constexpr u64 OcarinaOfTimeProgramId = 0x0400486024DEC000ULL;
+    bool enabled = Settings::GetCurrentProgramID() == OcarinaOfTimeProgramId;
+    if (const char* value = std::getenv("EDEN_NX2_ASYNC_DISCARD"); value != nullptr) {
+        enabled = value[0] != '0';
+    }
+    LOG_INFO(Render_Vulkan, "EDEN_NX2_ASYNC_DISCARD: native draws {} unbuilt pipelines",
+             enabled ? "skip" : "wait for");
+    return enabled;
+}
 } // Anonymous namespace
 
 PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
@@ -407,6 +423,7 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
       render_pass_cache{render_pass_cache_}, buffer_cache{buffer_cache_},
       texture_cache{texture_cache_}, shader_notify{shader_notify_},
       use_asynchronous_shaders{Settings::values.use_asynchronous_shaders.GetValue()},
+      discard_native_draws{use_asynchronous_shaders && DiscardNativeDraws()},
       use_vulkan_pipeline_cache{Settings::values.use_vulkan_driver_pipeline_cache.GetValue() &&
                                 !DriverCachesPipelines(device_)},
       workers(device.HasBrokenParallelShaderCompiling() ? 1ULL : GetTotalPipelineWorkers(),
@@ -967,7 +984,9 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
         background_active.store(true, std::memory_order_release);
         background_workers.reset(new Common::ThreadWorker(threads, "VkPipelinePrebuild", {},
                                                           Common::ThreadPlacement::Background));
-        for (auto& deferred : deferred_graphics) {
+        // Newest first: the cache file appends, so its end holds what the latest sessions found,
+        // which the game is likelier to need soon than its oldest entries.
+        for (auto& deferred : std::views::reverse(deferred_graphics)) {
             background_workers->QueueWork([this, key = deferred.first,
                                            envs_ = std::move(deferred.second)]() mutable {
                 bool build = !background_stop.load(std::memory_order_relaxed);
@@ -1153,6 +1172,19 @@ void PipelineCache::EvictUnusedPipelines() {
     if (frame_count <= EvictAfterFrames) {
         return;
     }
+    // Only while the cache is large: each one evicted is built again on the GPU thread when its
+    // place is revisited. Ocarina of Time evicted 3,400 in 25 minutes and rebuilt 1,850 (14 s of
+    // stalls, Frizti v3). 8,000 are ~3.6 GB of driver memory at most.
+    static const size_t evict_above = [] {
+        const char* value = std::getenv("EDEN_NX2_PIPELINE_EVICT_ABOVE");
+        if (value == nullptr) {
+            return size_t{8000};
+        }
+        return static_cast<size_t>(std::strtoull(value, nullptr, 10));
+    }();
+    if (graphics_cache.size() <= evict_above) {
+        return;
+    }
     const u64 cutoff = frame_count - EvictAfterFrames;
     const u64 tick = scheduler.CurrentTick();
     size_t evicted = 0;
@@ -1210,19 +1242,11 @@ GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) const
     if (!use_asynchronous_shaders) {
         return pipeline;
     }
-    static const bool discard_native = [] {
-        const char* value = std::getenv("EDEN_NX2_ASYNC_DISCARD");
-        const bool enabled = value != nullptr && value[0] == '1';
-        if (enabled) {
-            LOG_INFO(Render_Vulkan, "EDEN_NX2_ASYNC_DISCARD: native draws skip unbuilt pipelines");
-        }
-        return enabled;
-    }();
     const auto& draw_state = maxwell3d->draw_manager.draw_state;
     const bool discard = CanDiscardPendingDraw(maxwell3d->GetNativeMacroEngine().native_turing,
                                               maxwell3d->regs.zeta_enable != 0,
                                               draw_state.draw_element_count,
-                                              draw_state.draw_element_count, discard_native);
+                                              draw_state.draw_element_count, discard_native_draws);
     if (discard) {
         static std::atomic<u64> skipped{};
         if ((skipped.fetch_add(1, std::memory_order_relaxed) & 255) == 0) {
