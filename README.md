@@ -5,6 +5,8 @@
 # SPDX-FileCopyrightText: 2018 yuzu Emulator Project
 # SPDX-License-Identifier: GPL-2.0-or-later
 -->
+# Archived
+I no longer have interest in this emulator. The upstream developer doesn't seem to know how to actually collaborate with people and instead just throws tantrums whenever doubted. I'll instead be working on something for OOT that is more enjoyable for me and doesn't involve me with the entire Lichii emulator space. 
 
 <p align="center">
   <img src="dist/branding/lichii_icon_with_logo.png" alt="Lichii" width="600">
