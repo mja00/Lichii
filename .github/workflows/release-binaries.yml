@@ -77,6 +77,8 @@ jobs:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 3000M
       CCACHE_COMPILERCHECK: content
+      # The update checker compares this to the tags of the repo's releases.
+      LICHII_RELEASE_TAG: ${{ inputs.draft_version != '' && format('lichii-oot-v{0}', inputs.draft_version) || format('build-{0}', github.run_number) }}
     strategy:
       fail-fast: false
       matrix:
@@ -282,7 +284,7 @@ jobs:
             -DVulkanHeaders_FORCE_BUNDLED=ON
             -DVulkanUtilityLibraries_FORCE_BUNDLED=ON
             -DENABLE_UPDATE_CHECKER=ON
-            -DLICHII_BUILD_TAG=build-${{ github.run_number }}
+            -DLICHII_BUILD_TAG=${{ env.LICHII_RELEASE_TAG }}
             -DLICHII_BUILD_PLATFORM=${{ matrix.platform }}
             -DUSE_DISCORD_PRESENCE=OFF
             -DUSE_CCACHE=ON
@@ -315,7 +317,7 @@ jobs:
           -DYUZU_USE_BUNDLED_QT=OFF
           -DYUZU_USE_BUNDLED_SDL3=ON
           -DENABLE_UPDATE_CHECKER=ON
-          -DLICHII_BUILD_TAG=build-${{ github.run_number }}
+          -DLICHII_BUILD_TAG=${{ env.LICHII_RELEASE_TAG }}
           -DLICHII_BUILD_PLATFORM=${{ matrix.platform }}
           -DUSE_DISCORD_PRESENCE=OFF
           -DUSE_CCACHE=ON
@@ -338,7 +340,7 @@ jobs:
             -DVulkanHeaders_FORCE_BUNDLED=ON \
             -DVulkanUtilityLibraries_FORCE_BUNDLED=ON \
             -DENABLE_UPDATE_CHECKER=ON \
-            -DLICHII_BUILD_TAG=build-${{ github.run_number }} \
+            -DLICHII_BUILD_TAG=${{ env.LICHII_RELEASE_TAG }} \
             -DLICHII_BUILD_PLATFORM=${{ matrix.platform }} \
             -DUSE_DISCORD_PRESENCE=OFF \
             -DUSE_CCACHE=ON
@@ -365,7 +367,7 @@ jobs:
             -DVulkanHeaders_FORCE_BUNDLED=ON \
             -DVulkanUtilityLibraries_FORCE_BUNDLED=ON \
             -DENABLE_UPDATE_CHECKER=ON \
-            -DLICHII_BUILD_TAG=build-${{ github.run_number }} \
+            -DLICHII_BUILD_TAG=${{ env.LICHII_RELEASE_TAG }} \
             -DLICHII_BUILD_PLATFORM=${{ matrix.platform }} \
             -DUSE_DISCORD_PRESENCE=OFF \
             -DUSE_CCACHE=ON \
