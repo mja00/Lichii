@@ -107,6 +107,7 @@ add_library(video_core STATIC
     gpu_thread.cpp
     gpu_thread.h
     guest_memory.h
+    host_pacing.h
     invalidation_accumulator.h
     memory_manager.cpp
     memory_manager.h
@@ -206,6 +207,8 @@ add_library(video_core STATIC
     renderer_vulkan/vk_pipeline_cache.h
     renderer_vulkan/vk_present_manager.cpp
     renderer_vulkan/vk_present_manager.h
+    renderer_vulkan/vk_host_pacer.cpp
+    renderer_vulkan/vk_host_pacer.h
     renderer_vulkan/vk_query_cache.cpp
     renderer_vulkan/vk_query_cache.h
     renderer_vulkan/vk_rasterizer.cpp
@@ -460,6 +463,11 @@ add_dependencies(video_core host_shaders)
 target_include_directories(video_core PRIVATE ${HOST_SHADERS_INCLUDE})
 
 target_link_libraries(video_core PRIVATE sirit::sirit)
+
+if (WIN32)
+    # The host frame pacer reads DWM's measured refresh period; MinGW ignores #pragma comment(lib).
+    target_link_libraries(video_core PRIVATE dwmapi)
+endif()
 
 # Header-only stuff needed by all dependent targets
 target_link_libraries(video_core PUBLIC Vulkan::Headers Vulkan::UtilityHeaders GPUOpen::VulkanMemoryAllocator)
