@@ -5,6 +5,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 add_executable(tests
+    common/addon_config.cpp
     video_core/aftermath_dump.cpp
     video_core/frame_dump_schedule.cpp
     video_core/gpu_timestamp.cpp
@@ -56,6 +57,7 @@ add_executable(tests
     video_core/async_draw_policy.cpp
     video_core/multi_range_refresh.cpp
     video_core/command_fetch_order.cpp
+    video_core/gpu_written_pages.cpp
     video_core/command_snapshot_suspensions.cpp
     video_core/pending_maps.cpp
     hid_core/sensor_info.cpp
@@ -63,6 +65,7 @@ add_executable(tests
     common/queue_lifetime.cpp
     common/queue_timed_wait.cpp
     common/range_set_move.cpp
+    common/range_set_subtract.cpp
     video_core/uniform_cache_history.cpp
     video_core/x8d24_conversion.cpp
     video_core/ampere_ported_half_compare.cpp
@@ -137,7 +140,8 @@ add_executable(tests
 
 create_target_directory_groups(tests)
 
-target_link_libraries(tests PRIVATE common core audio_core input_common video_core)
+target_link_libraries(tests PRIVATE common core audio_core input_common video_core
+    frontend_common)
 target_link_libraries(tests PRIVATE ${PLATFORM_LIBRARIES} Catch2::Catch2WithMain Threads::Threads)
 
 if (TARGET dynarmic::dynarmic)

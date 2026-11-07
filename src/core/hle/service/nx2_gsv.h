@@ -59,6 +59,7 @@
 #include "core/memory.h"
 #include "video_core/host1x/host1x.h"
 #include "video_core/host1x/nx2_video_decoder.h"
+#include "video_core/host_pacing.h"
 #include "video_core/nx2.h"
 #include "video_core/textures/decoders.h"
 #include "core/hle/service/hle_ipc.h"
@@ -1916,6 +1917,14 @@ private:
         if (mkw_dynamic) {
             swap_interval = 1;
         }
+        // Ocarina of Time's 30 FPS mode: two vblanks a frame, for lower-end PCs. Read every
+        // present, so the status bar button applies within a frame. Dynamic FPS by Dark follows
+        // real time, so the game keeps its speed.
+        constexpr u64 OcarinaOfTimeProgramId = 0x0400486024DEC000ULL;
+        if (process != nullptr && process->GetProgramId() == OcarinaOfTimeProgramId &&
+            Settings::values.oot_30fps.GetValue()) {
+            swap_interval = (std::max)(swap_interval, 2U);
+        }
         if (forced_interval != 0) {
             swap_interval = forced_interval;
         }
@@ -1925,15 +1934,35 @@ private:
             m_frame_trace.refresh = refresh_rate;
             m_frame_trace.forced = forced_interval;
         }
+        // The host frame pacer (vk_host_pacer.h) holds each frame to a whole number of display
+        // refreshes of this period, and off Windows the nominal refresh period comes from here.
+        VideoCore::HostPacing::g_guest_refresh_hz.store(refresh_rate, std::memory_order_relaxed);
         if (!Settings::values.use_speed_limit.GetValue() || Settings::SpeedLimit() == 0) {
+            VideoCore::HostPacing::g_guest_frame_interval_ns.store(0, std::memory_order_relaxed);
             return;
         }
         if (timing != std::exchange(m_swap_word, timing)) {
             LOG_INFO(Service, "nx2:vi2 present #{} swap interval {} at {} Hz (word 12 = {:#x})",
                      m_presents, swap_interval, refresh_rate, timing);
         }
-        const auto interval = std::chrono::nanoseconds{
+        auto interval = std::chrono::nanoseconds{
             100'000'000'000LL * swap_interval / refresh_rate / Settings::SpeedLimit()};
+        // Genlock: with the host frame pacer on, a frame period within 1% of a whole number of
+        // display refreshes becomes exactly that many measured refreshes (a "120 Hz" display at
+        // 119.98 Hz: 33.3389 ms instead of 33.3333). On the game's own clock its frames drifted
+        // against the display and missed their refresh about once a minute (a 41 ms frame, then
+        // a short one). The game runs at most 1% slower.
+        if (const long long host_refresh =
+                VideoCore::HostPacing::g_host_refresh_ns.load(std::memory_order_relaxed);
+            host_refresh > 0) {
+            const long long refreshes = (interval.count() + host_refresh / 2) / host_refresh;
+            const long long locked = refreshes * host_refresh;
+            if (refreshes >= 1 && std::abs(locked - interval.count()) * 100 < interval.count()) {
+                interval = std::chrono::nanoseconds{locked};
+            }
+        }
+        VideoCore::HostPacing::g_guest_frame_interval_ns.store(interval.count(),
+                                                               std::memory_order_relaxed);
         if (trace) {
             m_frame_trace.target_ms = std::chrono::duration<double, std::milli>(interval).count();
         }

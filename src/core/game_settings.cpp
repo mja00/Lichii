@@ -163,6 +163,15 @@ void LoadEarlyOverrides(std::uint64_t program_id) {
                 Settings::values.vsync_mode.SetGlobal(false);
                 Settings::values.vsync_mode.SetValue(Settings::VSyncMode::Mailbox);
             }
+            // Docked rendering: Ocarina of Time on a TV. Only when the player has not chosen a
+            // mode themselves, so a deliberate Handheld or per-game choice stays.
+            if (Settings::values.players.GetValue()[0].controller_type !=
+                    Settings::ControllerType::Handheld &&
+                Settings::values.use_docked_mode.UsingGlobal() &&
+                Settings::values.use_docked_mode.GetValue() == Settings::ConsoleMode::Handheld) {
+                Settings::values.use_docked_mode.SetGlobal(false);
+                Settings::values.use_docked_mode.SetValue(Settings::ConsoleMode::Docked);
+            }
             Settings::values.cpu_clock.SetGlobal(false);
             Settings::values.cpu_clock.SetValue(Settings::CpuClock::Normal);
             break;

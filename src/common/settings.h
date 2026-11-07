@@ -611,6 +611,14 @@ struct Values {
     SwitchableSetting<bool> use_video_framerate{linkage, false, "use_video_framerate",
                                                 Category::RendererAdvanced};
 
+    // Ocarina of Time: present every second vblank for lower-end PCs (nx2_gsv.h PaceToVblank).
+    // The game keeps its speed because Dynamic FPS by Dark follows real time. Asked once at the
+    // first launch (oot_fps_asked), and read every present so a change applies at once.
+    SwitchableSetting<bool> oot_30fps{linkage, false, "oot_30fps", Category::RendererAdvanced,
+                                      Specialization::Default, true, true};
+    // Miscellaneous: not a user-facing option, so it stays out of the Graphics tabs.
+    Setting<bool> oot_fps_asked{linkage, false, "oot_fps_asked", Category::Miscellaneous};
+
     // Mario Kart World: select a fixed or dynamic in-game frame-rate mode (loader/nso.cpp).
     SwitchableSetting<bool> mkw_30fps{linkage, false, "mkw_30fps", Category::RendererAdvanced};
     SwitchableSetting<bool> mkw_dynamic_fps{linkage, false, "mkw_dynamic_fps",
